@@ -11,9 +11,9 @@ function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function runWatchdog() {
     console.log(`[${new Date().toISOString()}] 🔍 Watchdog запущен`);
-    
+
     const browser = await puppeteer.launch({
-        headless: true,
+        headless: 'new',
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
@@ -21,20 +21,21 @@ async function runWatchdog() {
             '--disable-gpu'
         ]
     });
-    
+
     let lastExtendTime = 0;
     let isCreating = false;
-    
+    let createdRecently = false;
+
     try {
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 800 });
-        
-        // === Логин ===
+
+        // ----- ЛОГИН -----
         console.log('🔐 Логинюсь...');
-        await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 30000 });
-        await wait(3000);
-        
-        // Пробуем разные селекторы для логина
+        await page.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 90000 });
+        await wait(5000); // даём странице отрисоваться
+
+        // Поля логина
         const loginSelectors = ['input[name="login"]', 'input[type="text"]', '#login'];
         for (let sel of loginSelectors) {
             const input = await page.$(sel);
@@ -44,7 +45,7 @@ async function runWatchdog() {
                 break;
             }
         }
-        
+
         const passSelectors = ['input[name="password"]', 'input[type="password"]', '#password'];
         for (let sel of passSelectors) {
             const input = await page.$(sel);
@@ -53,8 +54,8 @@ async function runWatchdog() {
                 break;
             }
         }
-        
-        // Нажимаем кнопку входа
+
+        // Кнопка входа
         await page.evaluate(() => {
             const btns = document.querySelectorAll('button, input[type="submit"]');
             for (let btn of btns) {
@@ -66,28 +67,39 @@ async function runWatchdog() {
                 }
             }
         });
-        
-        await wait(5000);
-        console.log('✅ Логин выполнен');
-        
-        // === ОСНОВНОЙ ЦИКЛ (бесконечный) ===
+
+        await wait(8000);
+        console.log('✅ Логин выполнен, переходим в основной цикл');
+
+        // ----- ОСНОВНОЙ ЦИКЛ -----
         while (true) {
             try {
                 console.log(`\n📊 [${new Date().toISOString()}] Проверка состояния...`);
-                
-                // 1. Обновляем страницу
-                await page.reload({ waitUntil: 'networkidle2', timeout: 30000 });
-                await wait(30000); // Ждём 30 секунд после рефреша
-                
-                // 2. Проверяем наличие VM
+
+                // 1. Полное обновление страницы
+                await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
+                console.log('⏳ Жду 60 секунд после рефреша (загрузка данных)...');
+                await wait(60000);
+
+                // 2. Диагностика: что видит браузер
+                const diag = await page.evaluate(() => {
+                    const cards = document.querySelectorAll('.vm-card');
+                    const bodyPreview = document.body.innerText.slice(0, 400);
+                    return { cardCount: cards.length, bodyPreview };
+                });
+                console.log(`🔍 Диагностика: .vm-card найдено = ${diag.cardCount}`);
+                if (diag.cardCount === 0) {
+                    console.log('📄 Первые 400 символов страницы:');
+                    console.log(diag.bodyPreview);
+                }
+
+                // 3. Получаем список VM
                 const vmInfo = await page.evaluate(() => {
-                    const vmCards = document.querySelectorAll('.vm-card');
                     const results = [];
-                    
-                    for (let card of vmCards) {
+                    const cards = document.querySelectorAll('.vm-card');
+                    for (let card of cards) {
                         const nameElem = card.querySelector('.vm-info h4');
                         const name = nameElem ? nameElem.innerText : 'Unknown';
-                        
                         const timerElem = card.querySelector('.timer-content .countdown');
                         let timeLeft = null;
                         if (timerElem) {
@@ -96,25 +108,24 @@ async function runWatchdog() {
                                 timeLeft = parseInt(match[1]) + parseInt(match[2]) / 60;
                             }
                         }
-                        
-                        // Проверяем, есть ли кнопка Extend
-                        const hasExtendBtn = Array.from(card.querySelectorAll('button')).some(
+                        const hasExtend = Array.from(card.querySelectorAll('button')).some(
                             btn => btn.innerText.toLowerCase().includes('extend')
                         );
-                        
-                        results.push({ name, timeLeft, hasExtendBtn });
+                        results.push({ name, timeLeft, hasExtend });
                     }
-                    
                     return results;
                 });
-                
+
                 console.log(`📟 Найдено VM: ${vmInfo.length}`);
-                
-                // 3. Если нет VM — создаём
-                if (vmInfo.length === 0 && !isCreating) {
+                for (let vm of vmInfo) {
+                    console.log(`   - ${vm.name}: осталось ${vm.timeLeft?.toFixed(1) ?? '?'} мин, кнопка продления: ${vm.hasExtend}`);
+                }
+
+                // 4. Если VM нет — создаём (с защитой от повторов)
+                if (vmInfo.length === 0 && !isCreating && !createdRecently) {
                     console.log('🚀 Нет активных VM, создаю новую (Windows)...');
                     isCreating = true;
-                    
+
                     // Выбираем Windows
                     await page.evaluate(() => {
                         const osBtns = document.querySelectorAll('.os-btn');
@@ -125,15 +136,15 @@ async function runWatchdog() {
                             }
                         }
                     });
-                    await wait(1000);
-                    
-                    // Нажимаем кнопку создания
+                    await wait(1500);
+
+                    // Кнопка создания
                     const createBtn = await page.$('#createVpsBtn');
                     if (createBtn) {
                         await createBtn.click();
-                        await wait(2000);
-                        
-                        // Принимаем ToS
+                        await wait(2500);
+
+                        // ToS диалог
                         await page.evaluate(() => {
                             const checkbox = document.getElementById('tosCheckbox');
                             if (checkbox) checkbox.click();
@@ -141,57 +152,65 @@ async function runWatchdog() {
                             if (acceptBtn) acceptBtn.disabled = false;
                             if (acceptBtn) acceptBtn.click();
                         });
-                        
-                        console.log('✅ VM создаётся (подождите 5-10 минут)');
+                        console.log('✅ Запрос на создание VM отправлен (Windows). Ожидание 3 минуты до следующей проверки.');
+
+                        createdRecently = true;
+                        setTimeout(() => { createdRecently = false; }, 180000); // 3 минуты
+                    } else {
+                        console.log('❌ Не найдена кнопка #createVpsBtn');
                     }
-                    
+
                     setTimeout(() => { isCreating = false; }, 60000);
                 }
-                
-                // 4. Проверяем таймеры и продлеваем
-                const now = Date.now();
-                for (let vm of vmInfo) {
-                    if (vm.timeLeft !== null && vm.timeLeft < 5 && (now - lastExtendTime) > 240000) {
-                        console.log(`⏰ VM "${vm.name}" — осталось ${vm.timeLeft} мин, продлеваю...`);
-                        
-                        // Нажимаем кнопку Extend на нужной VM
-                        const extended = await page.evaluate((vmName) => {
-                            const cards = document.querySelectorAll('.vm-card');
-                            for (let card of cards) {
-                                const nameElem = card.querySelector('.vm-info h4');
-                                if (nameElem && nameElem.innerText === vmName) {
-                                    const btns = card.querySelectorAll('button');
-                                    for (let btn of btns) {
-                                        if (btn.innerText.toLowerCase().includes('extend')) {
-                                            btn.click();
-                                            return true;
+                // 5. Если VM есть — проверяем время и продлеваем
+                else if (vmInfo.length > 0) {
+                    const now = Date.now();
+                    for (let vm of vmInfo) {
+                        if (vm.timeLeft !== null && vm.timeLeft < 4 && (now - lastExtendTime) > 240000) {
+                            console.log(`⏰ VM "${vm.name}" — осталось ${vm.timeLeft} мин, продлеваю...`);
+
+                            const clicked = await page.evaluate((vmName) => {
+                                const cards = document.querySelectorAll('.vm-card');
+                                for (let card of cards) {
+                                    const nameElem = card.querySelector('.vm-info h4');
+                                    if (nameElem && nameElem.innerText === vmName) {
+                                        const btns = card.querySelectorAll('button');
+                                        for (let btn of btns) {
+                                            if (btn.innerText.toLowerCase().includes('extend')) {
+                                                btn.click();
+                                                return true;
+                                            }
                                         }
                                     }
                                 }
+                                return false;
+                            }, vm.name);
+
+                            if (clicked) {
+                                console.log(`✅ VM "${vm.name}" продлена!`);
+                                lastExtendTime = now;
+                                await wait(3000);
+                            } else {
+                                console.log(`❌ Не удалось найти кнопку Extend для "${vm.name}"`);
                             }
-                            return false;
-                        }, vm.name);
-                        
-                        if (extended) {
-                            console.log(`✅ VM "${vm.name}" продлена!`);
-                            lastExtendTime = now;
-                            await wait(3000);
+                        } else if (vm.timeLeft !== null) {
+                            console.log(`✅ VM "${vm.name}" — в норме, осталось ${vm.timeLeft.toFixed(1)} мин`);
+                        } else {
+                            console.log(`⚠️ VM "${vm.name}" — таймер не распознан`);
                         }
-                    } else if (vm.timeLeft !== null) {
-                        console.log(`✅ VM "${vm.name}" — норм, осталось ${vm.timeLeft.toFixed(1)} мин`);
                     }
                 }
-                
-                // Ждём перед следующей итерацией
-                console.log('⏳ Жду 60 секунд до следующей проверки...');
-                await wait(60000);
-                
+
+                // 6. Пауза перед следующим циклом
+                console.log('⏳ Жду 90 секунд до следующей проверки...');
+                await wait(90000);
+
             } catch (err) {
-                console.error('❌ Ошибка в цикле:', err.message);
-                await wait(30000);
+                console.error('❌ Ошибка в основном цикле:', err.message);
+                await wait(60000);
             }
         }
-        
+
     } catch (err) {
         console.error('❌ Критическая ошибка:', err);
     } finally {
@@ -199,10 +218,10 @@ async function runWatchdog() {
     }
 }
 
-// Запускаем
 console.log('🎮 GCP Watchdog запущен на Railway!');
 console.log(`📅 Время старта: ${new Date().toISOString()}`);
 console.log('🪟 ОС: Windows 2022');
-console.log('🔄 Поддерживается 1 VM\n');
+console.log('🔄 Поддерживается 1 VM');
+console.log('⏱️  Продление за 4 минуты до конца, пауза после рефреша 60 сек\n');
 
 runWatchdog().catch(console.error);
